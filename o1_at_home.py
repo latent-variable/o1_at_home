@@ -4,7 +4,7 @@ author: latent-variable
 github: https://github.com/latent-variable/o1_at_home
 open-webui: https://openwebui.com/f/latentvariable/o1_at_home/
 Blog post: https://o1-at-home.hashnode.dev/run-o1-at-home-privately-think-respond-pipe-tutorial-with-open-webui-ollama
-version: 0.4
+version: 0.4.1
 Descrition: Think-Respond pipe that has an internal reasoning steps and another for producing a final response based on the reasoning.
             Now supports openAI api along with ollama, you can mix and match models 
 
@@ -99,6 +99,7 @@ class Pipe:
         self.total_thinking_tokens = 0
         self.max_thinking_time_reached = False
         self.__user__ = None
+        self._json_buffer = ""
     
 
     def pipes(self):
@@ -110,35 +111,46 @@ class Pipe:
 
     def get_chunk_content(self, chunk: bytes):
         """
-        Process a chunk of data from the API stream.
-
-        Args:
-            chunk (bytes): The raw byte content received from the API stream.
-
-        Yields:
-            str: The extracted content from the chunk's 'message' field, if available.
+        Accumulate chunk data in a buffer and extract complete JSON objects
+        from the buffer.
         """
-        chunk_str = chunk.decode("utf-8").strip()
+        self._json_buffer += chunk.decode("utf-8")
 
-        # Split the chunk by newlines in case of multiple entries
-        for part in chunk_str.split("\n"):
-            part = part.strip()
-            if not part:
-                continue  # Skip empty parts
+        # Attempt to parse out valid JSON lines in a loop
+        while True:
+            # Each line might end with "\n", or the next JSON object
+            # might just start right after the prior one. So look for
+            # a new line or some other marker.
+            newline_index = self._json_buffer.find("\n")
+            if newline_index == -1:
+                # No complete line yet; wait for more data
+                break
+
+            line = self._json_buffer[:newline_index].strip()
+            self._json_buffer = self._json_buffer[newline_index + 1:]
+
+            if not line:
+                continue
 
             try:
-                chunk_data = json.loads(part)
-
-                # Ensure the chunk contains the expected keys
+                chunk_data = json.loads(line)
                 if "message" in chunk_data and "content" in chunk_data["message"]:
                     yield chunk_data["message"]["content"]
-
-                # Handle the "done" field if necessary
                 if chunk_data.get("done", False):
                     break
-
             except json.JSONDecodeError as e:
-                logger.error(f'ChunkDecodeError: unable to parse "{part[:100]}": {e}')
+                logger.error(
+                    f'ChunkDecodeError: unable to parse "{line[:100]}": {e}'
+                )
+                # If we get a decode error, it likely means
+                # this line is incomplete or malformed. You can:
+                # 1. Keep a separate "incomplete_line" buffer and
+                #    re-append it to _json_buffer for the next iteration, or
+                # 2. Simply ignore malformed lines if you expect partial data.
+                #
+                # A simple approach is to re-append the line to the buffer:
+                self._json_buffer = line + "\n" + self._json_buffer
+                break
 
     async def get_response(
         self, model: str, messages: List[Dict[str, str]], thinking: bool, stream: bool
@@ -186,6 +198,8 @@ class Pipe:
             thinking = False
             stream = False
             response = await self.get_response(model, messages, thinking, stream)
+            if not response or "choices" not in response or not response["choices"]:
+                return "No content available"
             return response["choices"][0]["message"]["content"]
         except Exception as e:
             await self.set_status_end(f"Error: Is {model} a valid model? ({e})", __event_emitter__)
@@ -224,6 +238,11 @@ class Pipe:
                         )
                         self.max_thinking_time_reached = True
                         break
+            
+            # Force-close the stream after breaking:
+            if self.max_thinking_time_reached:
+                await response.close()
+                return
 
         except Exception as e:
             if thinking:
@@ -234,6 +253,7 @@ class Pipe:
                 category = 'Responding'
             await self.set_status_end(f"{category} Error: ensure {model} is a valid model option in the {api} api {e}", __event_emitter__)
         finally:
+            # Always close if response is still open
             if response and hasattr(response, "close"):
                 await response.close()
 
