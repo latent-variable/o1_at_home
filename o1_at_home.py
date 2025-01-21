@@ -4,7 +4,7 @@ author: latent-variable
 github: https://github.com/latent-variable/o1_at_home
 open-webui: https://openwebui.com/f/latentvariable/o1_at_home/
 Blog post: https://o1-at-home.hashnode.dev/run-o1-at-home-privately-think-respond-pipe-tutorial-with-open-webui-ollama
-version: 0.5.1
+version: 0.5.2
 Descrition: Think-Respond pipe that has an internal reasoning steps and another for producing a final response based on the reasoning.
             Now supports openAI api along with ollama, you can mix and match models 
 
