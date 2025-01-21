@@ -198,9 +198,23 @@ class Pipe:
             thinking = False
             stream = False
             response = await self.get_response(model, messages, thinking, stream)
-            if not response or "choices" not in response or not response["choices"]:
-                return "No content available"
-            return response["choices"][0]["message"]["content"]
+
+            if not response:
+                return "**No content available**"
+
+            # --- Handle old format (OpenAI style: { "choices": [ { "message": {...} } ] })
+            if "choices" in response:
+                if not response["choices"]:
+                    return "**No content available**"
+                return response["choices"][0]["message"]["content"]
+
+            # --- Handle new format (phi4 style: { "message": { "content": ... }, "done_reason": ..., "done": ... })
+            if "message" in response and "content" in response["message"]:
+                return response["message"]["content"]
+
+            # If neither format is recognized
+            return "**No content available**"
+
         except Exception as e:
             await self.set_status_end(f"Error: Is {model} a valid model? ({e})", __event_emitter__)
         finally:
@@ -394,9 +408,10 @@ class Pipe:
             return ""
         else:
             # avoid thinking and just return a regular response or named task, like tags
-            return await self.get_completion(
+            message = await self.get_completion(
                 self.valves.RESPONDING_MODEL.strip(), messages, __event_emitter__
             )
+            return message
 
     async def set_status(self, description: str, __event_emitter__: Optional[Callable[[Any], Awaitable[None]]] = None):
         await __event_emitter__({"type": "status", "data": {"description": description, "done": False}})
